@@ -331,6 +331,8 @@
 
         // Initialize water lines matching reference image
         let waterLines = [];
+        let revealProgress = 0; // 0 to 1, controls gradual reveal from top to bottom
+        const revealSpeed = 0.015; // Speed of the reveal animation
 
         function initWaterLines() {
             waterLines = [];
@@ -342,10 +344,18 @@
                 const x = startX + (i * lineSpacing);
                 waterLines.push(new WaterLine(x, i));
             }
+
+            // Reset reveal progress when initializing
+            revealProgress = 0;
         }
 
         // Update and draw water lines
         function updateWaterLines() {
+            // Animate reveal progress
+            if (revealProgress < 1) {
+                revealProgress = Math.min(1, revealProgress + revealSpeed);
+            }
+
             // Apply hand influence
             if (handPositions.length > 0) {
                 handPositions.forEach(hand => {
@@ -355,11 +365,24 @@
                 });
             }
 
+            // Calculate reveal mask position
+            const startY = waterfallShape.leftPanel.y - 20;
+            const endY = waterfallShape.leftPanel.y + waterfallShape.leftPanel.height + 50;
+            const revealY = startY + (endY - startY) * revealProgress;
+
+            // Apply clipping mask for gradual reveal
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(0, 0, width, revealY);
+            ctx.clip();
+
             // Update and draw each line
             waterLines.forEach(line => {
                 line.update();
                 line.draw();
             });
+
+            ctx.restore();
         }
 
         // Hand tracking setup
