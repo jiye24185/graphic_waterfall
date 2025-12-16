@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graphic Waterfall</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #F5F2ED;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 320px;
+            height: 240px;
+            display: none;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            z-index: 10;
+        }
+
+        button {
+            background: #2A2A2A;
+            color: #F5F2ED;
+            border: none;
+            padding: 16px 32px;
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: #3A3A3A;
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button.active {
+            background: #4A6FA5;
+        }
+
+        .signature {
+            position: absolute;
+            bottom: 20px;
+            right: 30px;
+            font-size: 10px;
+            letter-spacing: 2px;
+            color: #2A2A2A;
+            opacity: 0.6;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #2A2A2A;
+            font-size: 14px;
+            letter-spacing: 1px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+        <video id="video" playsinline></video>
+        <div id="loading">Initializing hand tracking...</div>
+
+        <div class="controls">
+            <button id="startBtn">Start Waterfall</button>
+            <button id="cameraBtn">Enable Camera</button>
+        </div>
+
+        <div class="signature">DAMINONVEC</div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const video = document.getElementById('video');
+        const startBtn = document.getElementById('startBtn');
+        const cameraBtn = document.getElementById('cameraBtn');
+        const loading = document.getElementById('loading');
+
+        let width, height;
+        let waterfallActive = false;
+        let cameraActive = false;
+        let particles = [];
+        let hands = null;
+        let camera = null;
+        let handPositions = [];
+
+        // Resize canvas to fill window
+        function resizeCanvas() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Waterfall shape definition (tall black cut-out with organic asymmetry)
+        const waterfallShape = {
+            x: width * 0.38,
+            y: height * 0.12,
+            width: width * 0.24,
+            height: height * 0.76,
+            topCurve: 0.25,
+            // Asymmetric control points for organic feel
+            leftBulge: 0.08,
+            rightBulge: 0.15,
+        };
+
+        // Update shape on resize
+        function updateShapePosition() {
+            waterfallShape.x = width * 0.38;
+            waterfallShape.y = height * 0.12;
+            waterfallShape.width = width * 0.24;
+            waterfallShape.height = height * 0.76;
+        }
+
+        // Enhanced particle class for connected waterfall streams
+        class WaterParticle {
+            constructor(x, y, streamId = 0) {
+                this.x = x;
+                this.y = y;
+                this.baseX = x;
+                this.vx = 0;
+                this.vy = 2;
+                this.size = Math.random() * 4 + 3;
+                this.opacity = Math.random() * 0.3 + 0.7;
+                this.life = 1;
+                this.pushForce = { x: 0, y: 0 };
+                this.damping = 0.94;
+                this.streamId = streamId;
+                this.age = 0;
+                this.prevX = x;
+                this.prevY = y;
+            }
+
+            update() {
+                this.prevX = this.x;
+                this.prevY = this.y;
+
+                // Apply gravity
+                this.vy += 0.18;
+
+                // Apply push force from hand
+                this.vx += this.pushForce.x;
+                this.vy += this.pushForce.y;
+
+                // Damping
+                this.vx *= this.damping;
+
+                // Gentle return to center
+                const returnForce = (this.baseX - this.x) * 0.015;
+                this.vx += returnForce;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Decay push force
+                this.pushForce.x *= 0.88;
+                this.pushForce.y *= 0.88;
+
+                // Age tracking
+                this.age++;
+
+                // Check if out of bounds
+                if (this.y > waterfallShape.y + waterfallShape.height + 50) {
+                    return false;
+                }
+
+                return true;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.opacity * this.life;
+
+                // Draw connected stream line
+                if (this.age > 1) {
+                    ctx.strokeStyle = '#A8B8CE';
+                    ctx.lineWidth = this.size * 0.8;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+
+                    // Soft gradient stroke
+                    const gradient = ctx.createLinearGradient(
+                        this.prevX, this.prevY,
+                        this.x, this.y
+                    );
+                    gradient.addColorStop(0, 'rgba(168, 184, 206, 0.9)');
+                    gradient.addColorStop(1, 'rgba(184, 197, 214, 0.85)');
+                    ctx.strokeStyle = gradient;
+
+                    ctx.beginPath();
+                    ctx.moveTo(this.prevX, this.prevY);
+                    ctx.lineTo(this.x, this.y);
+                    ctx.stroke();
+                }
+
+                // Draw particle blob
+                const gradient = ctx.createRadialGradient(
+                    this.x, this.y, 0,
+                    this.x, this.y, this.size * 1.2
+                );
+                gradient.addColorStop(0, 'rgba(200, 210, 225, 0.9)');
+                gradient.addColorStop(0.4, 'rgba(168, 184, 206, 0.7)');
+                gradient.addColorStop(1, 'rgba(163, 181, 206, 0)');
+
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            applyPush(hx, hy, strength) {
+                const dx = this.x - hx;
+                const dy = this.y - hy;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const influenceRadius = 180;
+
+                if (dist < influenceRadius && dist > 0) {
+                    const force = (1 - dist / influenceRadius) * strength;
+                    this.pushForce.x += (dx / dist) * force;
+                    this.pushForce.y += (dy / dist) * force;
+                }
+            }
+        }
+
+        // Draw the black cut-out shape with organic asymmetry
+        function drawWaterfallShape() {
+            ctx.save();
+
+            const x = waterfallShape.x;
+            const y = waterfallShape.y;
+            const w = waterfallShape.width;
+            const h = waterfallShape.height;
+            const curve = waterfallShape.topCurve;
+
+            // Create organic asymmetric shape
+            ctx.beginPath();
+
+            // Start from left side
+            ctx.moveTo(x, y + h * curve);
+
+            // Top left curve with gentle asymmetry
+            ctx.bezierCurveTo(
+                x - w * 0.02, y + h * 0.1,
+                x + w * 0.15, y - h * 0.02,
+                x + w * 0.4, y
+            );
+
+            // Top center to right with organic curve
+            ctx.bezierCurveTo(
+                x + w * 0.7, y + h * 0.01,
+                x + w * 1.05, y + h * 0.08,
+                x + w, y + h * curve * 0.8
+            );
+
+            // Right side with subtle bulge
+            const rightBulge = waterfallShape.rightBulge;
+            ctx.bezierCurveTo(
+                x + w + w * rightBulge, y + h * 0.4,
+                x + w + w * rightBulge * 0.5, y + h * 0.7,
+                x + w, y + h
+            );
+
+            // Bottom
+            ctx.lineTo(x, y + h);
+
+            // Left side with subtle bulge
+            const leftBulge = waterfallShape.leftBulge;
+            ctx.bezierCurveTo(
+                x - w * leftBulge * 0.5, y + h * 0.75,
+                x - w * leftBulge, y + h * 0.45,
+                x, y + h * curve
+            );
+
+            ctx.closePath();
+
+            // Fill with rich black
+            ctx.fillStyle = '#1A1A1A';
+            ctx.fill();
+
+            // Add subtle texture effect
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.02)';
+            for (let i = 0; i < 50; i++) {
+                const tx = x + Math.random() * w;
+                const ty = y + Math.random() * h;
+                ctx.fillRect(tx, ty, Math.random() * 2, Math.random() * 2);
+            }
+            ctx.globalCompositeOperation = 'source-over';
+
+            ctx.restore();
+        }
+
+        // Stream configuration for distinct flows
+        let streamConfig = [
+            { offset: -0.15, width: 0.08, rate: 3 },
+            { offset: 0.05, width: 0.12, rate: 5 },
+            { offset: 0.25, width: 0.06, rate: 2 },
+        ];
+        let frameCount = 0;
+
+        // Create new particles at the top with distinct streams
+        function spawnParticles() {
+            if (!waterfallActive) return;
+
+            frameCount++;
+            const spawnY = waterfallShape.y + 25;
+
+            streamConfig.forEach((stream, streamId) => {
+                // Vary spawn rate
+                if (frameCount % (4 - Math.floor(stream.rate / 2)) === 0) {
+                    const baseX = waterfallShape.x + waterfallShape.width * (0.5 + stream.offset);
+                    const streamWidth = waterfallShape.width * stream.width;
+
+                    for (let i = 0; i < stream.rate; i++) {
+                        const x = baseX + (Math.random() - 0.5) * streamWidth;
+                        const y = spawnY + Math.random() * 15;
+                        particles.push(new WaterParticle(x, y, streamId));
+                    }
+                }
+            });
+        }
+
+        // Update and draw particles
+        function updateParticles() {
+            // Apply hand influence
+            if (handPositions.length > 0) {
+                handPositions.forEach(hand => {
+                    particles.forEach(particle => {
+                        particle.applyPush(hand.x, hand.y, 2.5);
+                    });
+                });
+            }
+
+            // Update particles
+            particles = particles.filter(p => p.update());
+
+            // Draw particles
+            particles.forEach(p => p.draw());
+        }
+
+        // Hand tracking setup
+        function setupHandTracking() {
+            loading.style.display = 'block';
+
+            hands = new Hands({
+                locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                }
+            });
+
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onHandResults);
+
+            camera = new Camera(video, {
+                onFrame: async () => {
+                    if (cameraActive) {
+                        await hands.send({ image: video });
+                    }
+                },
+                width: 640,
+                height: 480
+            });
+
+            camera.start().then(() => {
+                loading.style.display = 'none';
+            }).catch(err => {
+                console.error('Camera error:', err);
+                loading.textContent = 'Camera access denied';
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 2000);
+            });
+        }
+
+        // Process hand tracking results
+        function onHandResults(results) {
+            handPositions = [];
+
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach(landmarks => {
+                    // Use palm center (landmark 9)
+                    const palmCenter = landmarks[9];
+
+                    // Convert from normalized coordinates to canvas coordinates
+                    // Note: MediaPipe gives mirrored coordinates
+                    const x = (1 - palmCenter.x) * width;
+                    const y = palmCenter.y * height;
+
+                    handPositions.push({ x, y });
+                });
+            }
+        }
+
+        // Main animation loop
+        function animate() {
+            // Clear canvas
+            ctx.fillStyle = '#F5F2ED';
+            ctx.fillRect(0, 0, width, height);
+
+            // Draw the black shape
+            drawWaterfallShape();
+
+            // Spawn and update particles
+            if (waterfallActive) {
+                spawnParticles();
+                updateParticles();
+            }
+
+            // Draw subtle hand interaction indicator
+            if (cameraActive && handPositions.length > 0 && waterfallActive) {
+                ctx.save();
+                handPositions.forEach(hand => {
+                    // Subtle ripple effect
+                    const gradient = ctx.createRadialGradient(hand.x, hand.y, 0, hand.x, hand.y, 100);
+                    gradient.addColorStop(0, 'rgba(180, 195, 215, 0.15)');
+                    gradient.addColorStop(0.5, 'rgba(180, 195, 215, 0.08)');
+                    gradient.addColorStop(1, 'rgba(180, 195, 215, 0)');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(hand.x, hand.y, 100, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+                ctx.restore();
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', () => {
+            waterfallActive = !waterfallActive;
+            startBtn.textContent = waterfallActive ? 'Stop Waterfall' : 'Start Waterfall';
+
+            if (!waterfallActive) {
+                particles = [];
+            }
+        });
+
+        cameraBtn.addEventListener('click', () => {
+            cameraActive = !cameraActive;
+            cameraBtn.classList.toggle('active');
+            cameraBtn.textContent = cameraActive ? 'Disable Camera' : 'Enable Camera';
+
+            if (cameraActive && !hands) {
+                setupHandTracking();
+            } else if (!cameraActive) {
+                handPositions = [];
+            }
+        });
+
+        // Update shape on window resize
+        window.addEventListener('resize', () => {
+            updateShapePosition();
+        });
+
+        // Start animation loop
+        animate();
+    </script>
+</body>
+</html>
