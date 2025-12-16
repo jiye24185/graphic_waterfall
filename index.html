@@ -142,253 +142,224 @@
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
 
-        // Waterfall shape definition (tall black cut-out with organic asymmetry)
+        // Simplified waterfall shape - two panels like reference image
         const waterfallShape = {
-            x: width * 0.38,
-            y: height * 0.12,
-            width: width * 0.24,
-            height: height * 0.76,
-            topCurve: 0.25,
-            // Asymmetric control points for organic feel
-            leftBulge: 0.08,
-            rightBulge: 0.15,
+            leftPanel: {
+                x: width * 0.25,
+                y: height * 0.2,
+                width: width * 0.13,
+                height: height * 0.65
+            },
+            rightPanel: {
+                x: width * 0.45,
+                y: height * 0.2,
+                width: width * 0.13,
+                height: height * 0.65
+            },
+            gap: width * 0.07,
+            waterfallX: width * 0.385,
+            waterfallWidth: width * 0.07
         };
 
         // Update shape on resize
         function updateShapePosition() {
-            waterfallShape.x = width * 0.38;
-            waterfallShape.y = height * 0.12;
-            waterfallShape.width = width * 0.24;
-            waterfallShape.height = height * 0.76;
+            waterfallShape.leftPanel = {
+                x: width * 0.25,
+                y: height * 0.2,
+                width: width * 0.13,
+                height: height * 0.65
+            };
+            waterfallShape.rightPanel = {
+                x: width * 0.45,
+                y: height * 0.2,
+                width: width * 0.13,
+                height: height * 0.65
+            };
+            waterfallShape.gap = width * 0.07;
+            waterfallShape.waterfallX = width * 0.385;
+            waterfallShape.waterfallWidth = width * 0.07;
         }
 
-        // Enhanced particle class for connected waterfall streams
-        class WaterParticle {
-            constructor(x, y, streamId = 0) {
-                this.x = x;
-                this.y = y;
+        // Line-based waterfall system matching reference image
+        class WaterLine {
+            constructor(x, index) {
                 this.baseX = x;
-                this.vx = 0;
-                this.vy = 2;
-                this.size = Math.random() * 4 + 3;
-                this.opacity = Math.random() * 0.3 + 0.7;
-                this.life = 1;
-                this.pushForce = { x: 0, y: 0 };
-                this.damping = 0.94;
-                this.streamId = streamId;
-                this.age = 0;
-                this.prevX = x;
-                this.prevY = y;
+                this.x = x;
+                this.index = index;
+                this.offset = 0;
+                this.targetOffset = 0;
+                this.points = [];
+                this.initPoints();
+            }
+
+            initPoints() {
+                // Create points along the line for curved displacement
+                const startY = waterfallShape.leftPanel.y - 20;
+                const endY = waterfallShape.leftPanel.y + waterfallShape.leftPanel.height + 50;
+                const segments = 30;
+
+                this.points = [];
+                for (let i = 0; i <= segments; i++) {
+                    const t = i / segments;
+                    const y = startY + (endY - startY) * t;
+                    this.points.push({
+                        y: y,
+                        offsetX: 0,
+                        targetOffsetX: 0
+                    });
+                }
             }
 
             update() {
-                this.prevX = this.x;
-                this.prevY = this.y;
+                // Smooth interpolation for each point
+                this.points.forEach(point => {
+                    point.offsetX += (point.targetOffsetX - point.offsetX) * 0.08;
+                    // Decay back to center
+                    point.targetOffsetX *= 0.95;
+                });
+            }
 
-                // Apply gravity
-                this.vy += 0.18;
+            applyHandInfluence(hx, hy, strength) {
+                this.points.forEach(point => {
+                    const dx = (this.baseX + point.offsetX) - hx;
+                    const dy = point.y - hy;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const influenceRadius = 150;
 
-                // Apply push force from hand
-                this.vx += this.pushForce.x;
-                this.vy += this.pushForce.y;
-
-                // Damping
-                this.vx *= this.damping;
-
-                // Gentle return to center
-                const returnForce = (this.baseX - this.x) * 0.015;
-                this.vx += returnForce;
-
-                // Update position
-                this.x += this.vx;
-                this.y += this.vy;
-
-                // Decay push force
-                this.pushForce.x *= 0.88;
-                this.pushForce.y *= 0.88;
-
-                // Age tracking
-                this.age++;
-
-                // Check if out of bounds
-                if (this.y > waterfallShape.y + waterfallShape.height + 50) {
-                    return false;
-                }
-
-                return true;
+                    if (dist < influenceRadius && dist > 0) {
+                        const force = (1 - dist / influenceRadius) * strength;
+                        point.targetOffsetX += (dx / dist) * force * 20;
+                    }
+                });
             }
 
             draw() {
+                if (!waterfallActive) return;
+
                 ctx.save();
-                ctx.globalAlpha = this.opacity * this.life;
 
-                // Draw connected stream line
-                if (this.age > 1) {
-                    ctx.strokeStyle = '#A8B8CE';
-                    ctx.lineWidth = this.size * 0.8;
-                    ctx.lineCap = 'round';
-                    ctx.lineJoin = 'round';
+                // Create smooth curved path through points
+                ctx.beginPath();
+                ctx.moveTo(this.baseX + this.points[0].offsetX, this.points[0].y);
 
-                    // Soft gradient stroke
-                    const gradient = ctx.createLinearGradient(
-                        this.prevX, this.prevY,
-                        this.x, this.y
-                    );
-                    gradient.addColorStop(0, 'rgba(168, 184, 206, 0.9)');
-                    gradient.addColorStop(1, 'rgba(184, 197, 214, 0.85)');
-                    ctx.strokeStyle = gradient;
+                for (let i = 1; i < this.points.length; i++) {
+                    const x = this.baseX + this.points[i].offsetX;
+                    const y = this.points[i].y;
 
-                    ctx.beginPath();
-                    ctx.moveTo(this.prevX, this.prevY);
-                    ctx.lineTo(this.x, this.y);
+                    if (i === 1) {
+                        ctx.lineTo(x, y);
+                    } else {
+                        // Smooth curve using previous point as control
+                        const prevX = this.baseX + this.points[i - 1].offsetX;
+                        const prevY = this.points[i - 1].y;
+                        const cpX = (prevX + x) / 2;
+                        const cpY = (prevY + y) / 2;
+                        ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
+                    }
+                }
+
+                // Line styling with graphic variation
+                const baseWidth = 3.0;
+                const variation = Math.sin(this.index * 0.7) * 0.6;
+                const lineWidth = baseWidth + variation;
+                ctx.lineWidth = lineWidth;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                // Graphic color matching reference
+                const opacity = 0.88 + Math.sin(this.index * 0.3) * 0.1;
+                const lightness = 190 + Math.sin(this.index * 0.4) * 10;
+                ctx.strokeStyle = `rgba(${lightness}, ${lightness + 10}, ${lightness + 20}, ${opacity})`;
+
+                ctx.stroke();
+
+                // Add subtle texture by drawing slightly offset shadow
+                if (this.index % 2 === 0) {
+                    ctx.globalAlpha = 0.15;
+                    ctx.lineWidth = lineWidth * 1.3;
+                    ctx.strokeStyle = `rgba(160, 175, 195, 0.3)`;
                     ctx.stroke();
                 }
 
-                // Draw particle blob
-                const gradient = ctx.createRadialGradient(
-                    this.x, this.y, 0,
-                    this.x, this.y, this.size * 1.2
-                );
-                gradient.addColorStop(0, 'rgba(200, 210, 225, 0.9)');
-                gradient.addColorStop(0.4, 'rgba(168, 184, 206, 0.7)');
-                gradient.addColorStop(1, 'rgba(163, 181, 206, 0)');
-
-                ctx.fillStyle = gradient;
-                ctx.beginPath();
-                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-                ctx.fill();
-
                 ctx.restore();
-            }
-
-            applyPush(hx, hy, strength) {
-                const dx = this.x - hx;
-                const dy = this.y - hy;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const influenceRadius = 180;
-
-                if (dist < influenceRadius && dist > 0) {
-                    const force = (1 - dist / influenceRadius) * strength;
-                    this.pushForce.x += (dx / dist) * force;
-                    this.pushForce.y += (dy / dist) * force;
-                }
             }
         }
 
-        // Draw the black cut-out shape with organic asymmetry
+        // Draw simplified two-panel shape matching reference image
         function drawWaterfallShape() {
             ctx.save();
-
-            const x = waterfallShape.x;
-            const y = waterfallShape.y;
-            const w = waterfallShape.width;
-            const h = waterfallShape.height;
-            const curve = waterfallShape.topCurve;
-
-            // Create organic asymmetric shape
-            ctx.beginPath();
-
-            // Start from left side
-            ctx.moveTo(x, y + h * curve);
-
-            // Top left curve with gentle asymmetry
-            ctx.bezierCurveTo(
-                x - w * 0.02, y + h * 0.1,
-                x + w * 0.15, y - h * 0.02,
-                x + w * 0.4, y
-            );
-
-            // Top center to right with organic curve
-            ctx.bezierCurveTo(
-                x + w * 0.7, y + h * 0.01,
-                x + w * 1.05, y + h * 0.08,
-                x + w, y + h * curve * 0.8
-            );
-
-            // Right side with subtle bulge
-            const rightBulge = waterfallShape.rightBulge;
-            ctx.bezierCurveTo(
-                x + w + w * rightBulge, y + h * 0.4,
-                x + w + w * rightBulge * 0.5, y + h * 0.7,
-                x + w, y + h
-            );
-
-            // Bottom
-            ctx.lineTo(x, y + h);
-
-            // Left side with subtle bulge
-            const leftBulge = waterfallShape.leftBulge;
-            ctx.bezierCurveTo(
-                x - w * leftBulge * 0.5, y + h * 0.75,
-                x - w * leftBulge, y + h * 0.45,
-                x, y + h * curve
-            );
-
-            ctx.closePath();
-
-            // Fill with rich black
             ctx.fillStyle = '#1A1A1A';
+
+            // Left panel
+            const left = waterfallShape.leftPanel;
+            ctx.beginPath();
+            ctx.moveTo(left.x, left.y + left.height * 0.15);
+            // Top curve
+            ctx.bezierCurveTo(
+                left.x, left.y,
+                left.x + left.width, left.y,
+                left.x + left.width, left.y + left.height * 0.1
+            );
+            // Right edge
+            ctx.lineTo(left.x + left.width, left.y + left.height);
+            // Bottom
+            ctx.lineTo(left.x, left.y + left.height);
+            // Left edge
+            ctx.closePath();
             ctx.fill();
 
-            // Add subtle texture effect
-            ctx.globalCompositeOperation = 'multiply';
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.02)';
-            for (let i = 0; i < 50; i++) {
-                const tx = x + Math.random() * w;
-                const ty = y + Math.random() * h;
-                ctx.fillRect(tx, ty, Math.random() * 2, Math.random() * 2);
-            }
-            ctx.globalCompositeOperation = 'source-over';
+            // Right panel
+            const right = waterfallShape.rightPanel;
+            ctx.beginPath();
+            ctx.moveTo(right.x, right.y + right.height * 0.1);
+            // Top curve
+            ctx.bezierCurveTo(
+                right.x, right.y,
+                right.x + right.width, right.y,
+                right.x + right.width, right.y + right.height * 0.15
+            );
+            // Right edge
+            ctx.lineTo(right.x + right.width, right.y + right.height);
+            // Bottom
+            ctx.lineTo(right.x, right.y + right.height);
+            // Left edge
+            ctx.closePath();
+            ctx.fill();
 
             ctx.restore();
         }
 
-        // Stream configuration for distinct flows
-        let streamConfig = [
-            { offset: -0.15, width: 0.08, rate: 3 },
-            { offset: 0.05, width: 0.12, rate: 5 },
-            { offset: 0.25, width: 0.06, rate: 2 },
-        ];
-        let frameCount = 0;
+        // Initialize water lines matching reference image
+        let waterLines = [];
 
-        // Create new particles at the top with distinct streams
-        function spawnParticles() {
-            if (!waterfallActive) return;
+        function initWaterLines() {
+            waterLines = [];
+            const numLines = 8; // Number of parallel lines
+            const startX = waterfallShape.waterfallX;
+            const lineSpacing = waterfallShape.waterfallWidth / (numLines - 1);
 
-            frameCount++;
-            const spawnY = waterfallShape.y + 25;
-
-            streamConfig.forEach((stream, streamId) => {
-                // Vary spawn rate
-                if (frameCount % (4 - Math.floor(stream.rate / 2)) === 0) {
-                    const baseX = waterfallShape.x + waterfallShape.width * (0.5 + stream.offset);
-                    const streamWidth = waterfallShape.width * stream.width;
-
-                    for (let i = 0; i < stream.rate; i++) {
-                        const x = baseX + (Math.random() - 0.5) * streamWidth;
-                        const y = spawnY + Math.random() * 15;
-                        particles.push(new WaterParticle(x, y, streamId));
-                    }
-                }
-            });
+            for (let i = 0; i < numLines; i++) {
+                const x = startX + (i * lineSpacing);
+                waterLines.push(new WaterLine(x, i));
+            }
         }
 
-        // Update and draw particles
-        function updateParticles() {
+        // Update and draw water lines
+        function updateWaterLines() {
             // Apply hand influence
             if (handPositions.length > 0) {
                 handPositions.forEach(hand => {
-                    particles.forEach(particle => {
-                        particle.applyPush(hand.x, hand.y, 2.5);
+                    waterLines.forEach(line => {
+                        line.applyHandInfluence(hand.x, hand.y, 1.0);
                     });
                 });
             }
 
-            // Update particles
-            particles = particles.filter(p => p.update());
-
-            // Draw particles
-            particles.forEach(p => p.draw());
+            // Update and draw each line
+            waterLines.forEach(line => {
+                line.update();
+                line.draw();
+            });
         }
 
         // Hand tracking setup
@@ -456,13 +427,12 @@
             ctx.fillStyle = '#F5F2ED';
             ctx.fillRect(0, 0, width, height);
 
-            // Draw the black shape
+            // Draw the black panels
             drawWaterfallShape();
 
-            // Spawn and update particles
+            // Update and draw water lines
             if (waterfallActive) {
-                spawnParticles();
-                updateParticles();
+                updateWaterLines();
             }
 
             // Draw subtle hand interaction indicator
@@ -471,8 +441,8 @@
                 handPositions.forEach(hand => {
                     // Subtle ripple effect
                     const gradient = ctx.createRadialGradient(hand.x, hand.y, 0, hand.x, hand.y, 100);
-                    gradient.addColorStop(0, 'rgba(180, 195, 215, 0.15)');
-                    gradient.addColorStop(0.5, 'rgba(180, 195, 215, 0.08)');
+                    gradient.addColorStop(0, 'rgba(180, 195, 215, 0.12)');
+                    gradient.addColorStop(0.5, 'rgba(180, 195, 215, 0.05)');
                     gradient.addColorStop(1, 'rgba(180, 195, 215, 0)');
                     ctx.fillStyle = gradient;
                     ctx.beginPath();
@@ -490,8 +460,8 @@
             waterfallActive = !waterfallActive;
             startBtn.textContent = waterfallActive ? 'Stop Waterfall' : 'Start Waterfall';
 
-            if (!waterfallActive) {
-                particles = [];
+            if (waterfallActive && waterLines.length === 0) {
+                initWaterLines();
             }
         });
 
@@ -509,7 +479,11 @@
 
         // Update shape on window resize
         window.addEventListener('resize', () => {
+            resizeCanvas();
             updateShapePosition();
+            if (waterfallActive) {
+                initWaterLines();
+            }
         });
 
         // Start animation loop
