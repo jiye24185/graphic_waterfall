@@ -120,7 +120,8 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
 
     <script>
         const canvas = document.getElementById('canvas');
@@ -134,9 +135,10 @@
         let waterfallActive = false;
         let cameraActive = false;
         let particles = [];
-        let hands = null;
+        let pose = null;
         let camera = null;
-        let handPositions = [];
+        let bodyKeypoints = [];
+        let bodySilhouette = null;
 
         // Resize canvas to fill window
         function resizeCanvas() {
@@ -162,216 +164,161 @@
             waterfallShape.endY = height * 0.85;
         }
 
-        // Line-based waterfall system matching reference image
-        class WaterLine {
-            constructor(x, index) {
-                this.baseX = x;
+        // Digital pixel-based waterfall particle system
+        class DigitalParticle {
+            constructor(x, y, lineIndex) {
                 this.x = x;
-                this.index = index;
-                this.offset = 0;
-                this.targetOffset = 0;
-                this.points = [];
-                this.initPoints();
+                this.y = y;
+                this.baseX = x;
+                this.vx = 0;
+                this.vy = 2 + Math.random() * 1;
+                this.size = 3 + Math.random() * 2;
+                this.opacity = 0.7 + Math.random() * 0.3;
+                this.lineIndex = lineIndex;
+                this.color = this.getColor();
+                this.pushForce = { x: 0, y: 0 };
             }
 
-            initPoints() {
-                // Create points along the line for curved displacement
-                const startY = waterfallShape.startY;
-                const endY = waterfallShape.endY;
-                const segments = 30;
-
-                this.points = [];
-                for (let i = 0; i <= segments; i++) {
-                    const t = i / segments;
-                    const y = startY + (endY - startY) * t;
-                    this.points.push({
-                        y: y,
-                        offsetX: 0,
-                        targetOffsetX: 0
-                    });
-                }
+            getColor() {
+                const colors = [
+                    'rgba(100, 180, 255, ',
+                    'rgba(150, 200, 255, ',
+                    'rgba(180, 220, 255, ',
+                    'rgba(120, 190, 255, '
+                ];
+                return colors[Math.floor(Math.random() * colors.length)];
             }
 
             update() {
-                // Smooth interpolation for each point
-                this.points.forEach(point => {
-                    point.offsetX += (point.targetOffsetX - point.offsetX) * 0.08;
-                    // Decay back to center
-                    point.targetOffsetX *= 0.95;
-                });
+                // Apply physics
+                this.vy += 0.15;
+                this.vx += this.pushForce.x;
+                this.vy += this.pushForce.y;
+
+                // Damping
+                this.vx *= 0.92;
+
+                // Gentle return to base X
+                const returnForce = (this.baseX - this.x) * 0.02;
+                this.vx += returnForce;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Decay push force
+                this.pushForce.x *= 0.85;
+                this.pushForce.y *= 0.85;
+
+                // Check if out of bounds
+                return this.y < height + 50;
             }
 
-            applyHandInfluence(hx, hy, strength) {
-                this.points.forEach(point => {
-                    const dx = (this.baseX + point.offsetX) - hx;
-                    const dy = point.y - hy;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    const influenceRadius = 150;
+            applyBodyInfluence(silhouetteData) {
+                if (!silhouetteData) return;
 
-                    if (dist < influenceRadius && dist > 0) {
-                        const force = (1 - dist / influenceRadius) * strength;
-                        point.targetOffsetX += (dx / dist) * force * 20;
+                const px = Math.floor(this.x);
+                const py = Math.floor(this.y);
+
+                if (px >= 0 && px < width && py >= 0 && py < height) {
+                    const index = (py * width + px) * 4;
+                    const alpha = silhouetteData[index + 3];
+
+                    // If particle is inside body silhouette
+                    if (alpha > 50) {
+                        // Push particles away from center of mass
+                        const repelStrength = 4;
+                        this.pushForce.x += (Math.random() - 0.5) * repelStrength;
+                        this.pushForce.y += -1;
                     }
-                });
+                }
             }
 
             draw() {
-                if (!waterfallActive) return;
-
                 ctx.save();
+                ctx.globalAlpha = this.opacity;
 
-                // Create smooth curved path through points
-                ctx.beginPath();
-                ctx.moveTo(this.baseX + this.points[0].offsetX, this.points[0].y);
+                // Draw digital pixel
+                ctx.fillStyle = this.color + this.opacity + ')';
+                ctx.fillRect(Math.floor(this.x), Math.floor(this.y), this.size, this.size);
 
-                for (let i = 1; i < this.points.length; i++) {
-                    const x = this.baseX + this.points[i].offsetX;
-                    const y = this.points[i].y;
-
-                    if (i === 1) {
-                        ctx.lineTo(x, y);
-                    } else {
-                        // Smooth curve using previous point as control
-                        const prevX = this.baseX + this.points[i - 1].offsetX;
-                        const prevY = this.points[i - 1].y;
-                        const cpX = (prevX + x) / 2;
-                        const cpY = (prevY + y) / 2;
-                        ctx.quadraticCurveTo(prevX, prevY, cpX, cpY);
-                    }
-                }
-
-                // Line styling with graphic variation
-                const baseWidth = 3.0;
-                const variation = Math.sin(this.index * 0.7) * 0.6;
-                const lineWidth = baseWidth + variation;
-                ctx.lineWidth = lineWidth;
-                ctx.lineCap = 'round';
-                ctx.lineJoin = 'round';
-
-                // Graphic color matching reference
-                const opacity = 0.88 + Math.sin(this.index * 0.3) * 0.1;
-                const lightness = 190 + Math.sin(this.index * 0.4) * 10;
-                ctx.strokeStyle = `rgba(${lightness}, ${lightness + 10}, ${lightness + 20}, ${opacity})`;
-
-                ctx.stroke();
-
-                // Add subtle texture by drawing slightly offset shadow
-                if (this.index % 2 === 0) {
-                    ctx.globalAlpha = 0.15;
-                    ctx.lineWidth = lineWidth * 1.3;
-                    ctx.strokeStyle = `rgba(160, 175, 195, 0.3)`;
-                    ctx.stroke();
-                }
+                // Add glow effect
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = this.color + '0.8)';
+                ctx.fillRect(Math.floor(this.x), Math.floor(this.y), this.size, this.size);
 
                 ctx.restore();
             }
         }
 
-        // Draw simplified two-panel shape matching reference image
-        function drawWaterfallShape() {
-            ctx.save();
-            ctx.fillStyle = '#1A1A1A';
+        // Initialize digital particles
+        let particles = [];
+        let revealProgress = 0;
+        const revealSpeed = 0.015;
+        let waterLevel = 0;
+        const maxWaterLevel = 0.25;
+        const waterRiseSpeed = 0.008;
 
-            // Left panel
-            const left = waterfallShape.leftPanel;
-            ctx.beginPath();
-            ctx.moveTo(left.x, left.y + left.height * 0.15);
-            // Top curve
-            ctx.bezierCurveTo(
-                left.x, left.y,
-                left.x + left.width, left.y,
-                left.x + left.width, left.y + left.height * 0.1
-            );
-            // Right edge
-            ctx.lineTo(left.x + left.width, left.y + left.height);
-            // Bottom
-            ctx.lineTo(left.x, left.y + left.height);
-            // Left edge
-            ctx.closePath();
-            ctx.fill();
+        function spawnParticles() {
+            if (!waterfallActive) return;
 
-            // Right panel
-            const right = waterfallShape.rightPanel;
-            ctx.beginPath();
-            ctx.moveTo(right.x, right.y + right.height * 0.1);
-            // Top curve
-            ctx.bezierCurveTo(
-                right.x, right.y,
-                right.x + right.width, right.y,
-                right.x + right.width, right.y + right.height * 0.15
-            );
-            // Right edge
-            ctx.lineTo(right.x + right.width, right.y + right.height);
-            // Bottom
-            ctx.lineTo(right.x, right.y + right.height);
-            // Left edge
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.restore();
-        }
-
-        // Initialize water lines matching reference image
-        let waterLines = [];
-        let revealProgress = 0; // 0 to 1, controls gradual reveal from top to bottom
-        const revealSpeed = 0.015; // Speed of the reveal animation
-        let waterLevel = 0; // Height of accumulated water at bottom
-        const maxWaterLevel = 0.25; // Maximum water level as fraction of canvas height
-        const waterRiseSpeed = 0.008; // Speed of water level rising
-
-        function initWaterLines() {
-            waterLines = [];
-            const numLines = 8; // Number of parallel lines
+            const numStreams = 12;
+            const particlesPerStream = 2;
             const startX = waterfallShape.waterfallX;
-            const lineSpacing = waterfallShape.waterfallWidth / (numLines - 1);
+            const streamWidth = waterfallShape.waterfallWidth;
 
-            for (let i = 0; i < numLines; i++) {
-                const x = startX + (i * lineSpacing);
-                waterLines.push(new WaterLine(x, i));
+            for (let i = 0; i < numStreams; i++) {
+                const x = startX + (streamWidth / (numStreams - 1)) * i;
+                const startY = waterfallShape.startY;
+
+                for (let j = 0; j < particlesPerStream; j++) {
+                    const px = x + (Math.random() - 0.5) * 5;
+                    const py = startY + Math.random() * 20;
+                    particles.push(new DigitalParticle(px, py, i));
+                }
             }
 
-            // Reset reveal progress and water level when initializing
-            revealProgress = 0;
-            waterLevel = 0;
+            // Limit particle count
+            if (particles.length > 800) {
+                particles = particles.slice(-800);
+            }
         }
 
-        // Update and draw water lines
-        function updateWaterLines() {
+        // Update and draw particles
+        function updateParticles() {
             // Animate reveal progress
             if (revealProgress < 1) {
                 revealProgress = Math.min(1, revealProgress + revealSpeed);
             } else {
-                // Once reveal is complete, start raising water level
                 if (waterLevel < maxWaterLevel) {
                     waterLevel = Math.min(maxWaterLevel, waterLevel + waterRiseSpeed);
                 }
             }
 
-            // Apply hand influence
-            if (handPositions.length > 0) {
-                handPositions.forEach(hand => {
-                    waterLines.forEach(line => {
-                        line.applyHandInfluence(hand.x, hand.y, 1.0);
-                    });
-                });
+            // Get body silhouette data if camera is active
+            let silhouetteData = null;
+            if (cameraActive && bodySilhouette) {
+                silhouetteData = bodySilhouette.data;
             }
 
-            // Calculate reveal mask position
-            const startY = waterfallShape.startY;
-            const endY = waterfallShape.endY;
-            const revealY = startY + (endY - startY) * revealProgress;
+            // Update particles
+            particles = particles.filter(p => {
+                if (silhouetteData) {
+                    p.applyBodyInfluence(silhouetteData);
+                }
+                return p.update();
+            });
 
-            // Apply clipping mask for gradual reveal
+            // Calculate reveal mask
+            const revealY = waterfallShape.startY + (waterfallShape.endY - waterfallShape.startY) * revealProgress;
+
+            // Draw with clipping
             ctx.save();
             ctx.beginPath();
             ctx.rect(0, 0, width, revealY);
             ctx.clip();
 
-            // Update and draw each line
-            waterLines.forEach(line => {
-                line.update();
-                line.draw();
-            });
+            particles.forEach(p => p.draw());
 
             ctx.restore();
         }
@@ -434,29 +381,32 @@
             ctx.restore();
         }
 
-        // Hand tracking setup
-        function setupHandTracking() {
+        // Body pose tracking setup
+        function setupBodyTracking() {
             loading.style.display = 'block';
+            loading.textContent = 'Initializing body tracking...';
 
-            hands = new Hands({
+            pose = new Pose({
                 locateFile: (file) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
                 }
             });
 
-            hands.setOptions({
-                maxNumHands: 2,
+            pose.setOptions({
                 modelComplexity: 1,
+                smoothLandmarks: true,
+                enableSegmentation: true,
+                smoothSegmentation: true,
                 minDetectionConfidence: 0.5,
                 minTrackingConfidence: 0.5
             });
 
-            hands.onResults(onHandResults);
+            pose.onResults(onPoseResults);
 
             camera = new Camera(video, {
                 onFrame: async () => {
                     if (cameraActive) {
-                        await hands.send({ image: video });
+                        await pose.send({ image: video });
                     }
                 },
                 width: 640,
@@ -474,28 +424,35 @@
             });
         }
 
-        // Process hand tracking results
-        function onHandResults(results) {
-            handPositions = [];
+        // Process pose tracking results
+        function onPoseResults(results) {
+            bodyKeypoints = [];
 
-            if (results.multiHandLandmarks) {
-                results.multiHandLandmarks.forEach(landmarks => {
-                    // Use palm center (landmark 9)
-                    const palmCenter = landmarks[9];
-
-                    // Convert from normalized coordinates to canvas coordinates
-                    // Note: MediaPipe gives mirrored coordinates
-                    const x = (1 - palmCenter.x) * width;
-                    const y = palmCenter.y * height;
-
-                    handPositions.push({ x, y });
+            if (results.poseLandmarks) {
+                // Convert landmarks to canvas coordinates
+                results.poseLandmarks.forEach(landmark => {
+                    const x = (1 - landmark.x) * width; // Mirror horizontally
+                    const y = landmark.y * height;
+                    bodyKeypoints.push({ x, y, z: landmark.z });
                 });
+            }
+
+            // Create body silhouette from segmentation mask
+            if (results.segmentationMask) {
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = width;
+                tempCanvas.height = height;
+                const tempCtx = tempCanvas.getContext('2d');
+
+                // Draw segmentation mask
+                tempCtx.drawImage(results.segmentationMask, 0, 0, width, height);
+                bodySilhouette = tempCtx.getImageData(0, 0, width, height);
             }
         }
 
         // Main animation loop
         function animate() {
-            // Clear canvas with semi-transparent fill to allow background image to show
+            // Clear canvas
             ctx.clearRect(0, 0, width, height);
 
             // Draw accumulated water at bottom
@@ -503,25 +460,29 @@
                 drawAccumulatedWater();
             }
 
-            // Update and draw water lines
+            // Spawn and update particles
             if (waterfallActive) {
-                updateWaterLines();
+                spawnParticles();
+                updateParticles();
             }
 
-            // Draw subtle hand interaction indicator
-            if (cameraActive && handPositions.length > 0 && waterfallActive) {
+            // Draw body silhouette outline for visual feedback (optional)
+            if (cameraActive && bodyKeypoints.length > 0 && waterfallActive) {
                 ctx.save();
-                handPositions.forEach(hand => {
-                    // Subtle ripple effect
-                    const gradient = ctx.createRadialGradient(hand.x, hand.y, 0, hand.x, hand.y, 100);
-                    gradient.addColorStop(0, 'rgba(180, 195, 215, 0.12)');
-                    gradient.addColorStop(0.5, 'rgba(180, 195, 215, 0.05)');
-                    gradient.addColorStop(1, 'rgba(180, 195, 215, 0)');
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(hand.x, hand.y, 100, 0, Math.PI * 2);
-                    ctx.fill();
+                ctx.strokeStyle = 'rgba(100, 180, 255, 0.3)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+
+                // Draw simple body outline
+                ctx.beginPath();
+                bodyKeypoints.forEach((point, i) => {
+                    if (i === 0) {
+                        ctx.moveTo(point.x, point.y);
+                    } else {
+                        ctx.lineTo(point.x, point.y);
+                    }
                 });
+                ctx.stroke();
                 ctx.restore();
             }
 
@@ -533,8 +494,10 @@
             waterfallActive = !waterfallActive;
             startBtn.textContent = waterfallActive ? 'Stop Waterfall' : 'Start Waterfall';
 
-            if (waterfallActive && waterLines.length === 0) {
-                initWaterLines();
+            if (!waterfallActive) {
+                particles = [];
+                revealProgress = 0;
+                waterLevel = 0;
             }
         });
 
@@ -543,10 +506,11 @@
             cameraBtn.classList.toggle('active');
             cameraBtn.textContent = cameraActive ? 'Disable Camera' : 'Enable Camera';
 
-            if (cameraActive && !hands) {
-                setupHandTracking();
+            if (cameraActive && !pose) {
+                setupBodyTracking();
             } else if (!cameraActive) {
-                handPositions = [];
+                bodyKeypoints = [];
+                bodySilhouette = null;
             }
         });
 
@@ -554,9 +518,6 @@
         window.addEventListener('resize', () => {
             resizeCanvas();
             updateShapePosition();
-            if (waterfallActive) {
-                initWaterLines();
-            }
         });
 
         // Start animation loop
