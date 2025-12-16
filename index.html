@@ -44,7 +44,7 @@
 
         .controls {
             position: absolute;
-            bottom: 40px;
+            top: 40px;
             left: 50%;
             transform: translateX(-50%);
             display: flex;
@@ -333,6 +333,9 @@
         let waterLines = [];
         let revealProgress = 0; // 0 to 1, controls gradual reveal from top to bottom
         const revealSpeed = 0.015; // Speed of the reveal animation
+        let waterLevel = 0; // Height of accumulated water at bottom
+        const maxWaterLevel = 0.25; // Maximum water level as fraction of canvas height
+        const waterRiseSpeed = 0.008; // Speed of water level rising
 
         function initWaterLines() {
             waterLines = [];
@@ -345,8 +348,9 @@
                 waterLines.push(new WaterLine(x, i));
             }
 
-            // Reset reveal progress when initializing
+            // Reset reveal progress and water level when initializing
             revealProgress = 0;
+            waterLevel = 0;
         }
 
         // Update and draw water lines
@@ -354,6 +358,11 @@
             // Animate reveal progress
             if (revealProgress < 1) {
                 revealProgress = Math.min(1, revealProgress + revealSpeed);
+            } else {
+                // Once reveal is complete, start raising water level
+                if (waterLevel < maxWaterLevel) {
+                    waterLevel = Math.min(maxWaterLevel, waterLevel + waterRiseSpeed);
+                }
             }
 
             // Apply hand influence
@@ -381,6 +390,64 @@
                 line.update();
                 line.draw();
             });
+
+            ctx.restore();
+        }
+
+        // Draw accumulated water at the bottom
+        function drawAccumulatedWater() {
+            if (waterLevel <= 0) return;
+
+            const waterHeight = height * waterLevel;
+            const waterTop = height - waterHeight;
+
+            ctx.save();
+
+            // Create water shape with subtle waves
+            ctx.beginPath();
+            ctx.moveTo(0, height);
+
+            // Draw wavy top surface
+            const wavePoints = 50;
+            for (let i = 0; i <= wavePoints; i++) {
+                const x = (width / wavePoints) * i;
+                const waveOffset = Math.sin(i * 0.3 + Date.now() * 0.001) * 3;
+                const y = waterTop + waveOffset;
+
+                if (i === 0) {
+                    ctx.lineTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            ctx.lineTo(width, height);
+            ctx.closePath();
+
+            // Fill with gradient
+            const gradient = ctx.createLinearGradient(0, waterTop, 0, height);
+            gradient.addColorStop(0, 'rgba(168, 188, 210, 0.3)');
+            gradient.addColorStop(0.3, 'rgba(180, 195, 215, 0.35)');
+            gradient.addColorStop(1, 'rgba(185, 200, 220, 0.4)');
+            ctx.fillStyle = gradient;
+            ctx.fill();
+
+            // Add subtle highlight at the top
+            ctx.strokeStyle = 'rgba(200, 210, 225, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i <= wavePoints; i++) {
+                const x = (width / wavePoints) * i;
+                const waveOffset = Math.sin(i * 0.3 + Date.now() * 0.001) * 3;
+                const y = waterTop + waveOffset;
+
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            ctx.stroke();
 
             ctx.restore();
         }
@@ -449,6 +516,11 @@
             // Clear canvas
             ctx.fillStyle = '#F5F2ED';
             ctx.fillRect(0, 0, width, height);
+
+            // Draw accumulated water at bottom (before black panels)
+            if (waterfallActive) {
+                drawAccumulatedWater();
+            }
 
             // Draw the black panels
             drawWaterfallShape();
